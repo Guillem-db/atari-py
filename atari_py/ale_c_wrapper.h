@@ -2,6 +2,7 @@
 #define __ALE_C_WRAPPER_H__
 
 #include <ale_interface.hpp>
+#include <immintrin.h>
 
 extern "C" {
   // Declares int rgb_palette[256]
@@ -61,19 +62,34 @@ extern "C" {
     ale->theOSystem->colourPalette().applyPaletteRGB(output_buffer, ale_screen_data, screen_size);
   }
 
-  void getScreenRGB2(ALEInterface *ale, unsigned char *output_buffer){
-    size_t w = ale->getScreen().width();
-    size_t h = ale->getScreen().height();
-    size_t screen_size = w*h;
-    pixel_t *ale_screen_data = ale->getScreen().getArray();
+  void getScreenRGB2(ALEInterface *ale, unsigned char *output_buffer) {
+      size_t w = ale->getScreen().width();
+      size_t h = ale->getScreen().height();
+      size_t screen_size = w * h;
+      pixel_t *ale_screen_data = ale->getScreen().getArray();
 
-    int j = 0;
-    for(int i = 0;i < screen_size;i++){
-        unsigned int zrgb = rgb_palette[ale_screen_data[i]];
-        output_buffer[j++] = (zrgb>>16)&0xff;
-        output_buffer[j++] = (zrgb>>8)&0xff;
-        output_buffer[j++] = (zrgb>>0)&0xff;
-    }
+      const __m256i shuffle_mask = _mm256_setr_epi8(2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, 0x80, 0x80, 0x80, 0x80,
+                                                    2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, 0x80, 0x80, 0x80, 0x80);
+      int i = 0;
+      for (; i < screen_size - 31; i += 8) {
+          __m256i indices = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(ale_screen_data + i));
+          __m256i indices32 = _mm256_cvtepu8_epi32(_mm256_castsi256_si128(indices));
+          __m256i output = _mm256_i32gather_epi32(rgb_palette, indices32, 4);
+          __m256i packed = _mm256_shuffle_epi8(output, shuffle_mask);
+          int pix = i * 3;
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(output_buffer + pix), _mm256_castsi256_si128(packed));
+          _mm_storeu_si128(reinterpret_cast<__m128i *>(output_buffer + pix + 12), _mm256_extracti128_si256(packed, 1));
+      }
+      for (; i < screen_size; i++) {
+          unsigned int zrgb = __builtin_bswap32(rgb_palette[ale_screen_data[i]]) >> 8;
+          if (i < screen_size - 1) {
+              *reinterpret_cast<unsigned int *>(output_buffer + i * 3) = zrgb;
+          } else {
+              output_buffer[i * 3] = zrgb & 0xff;
+              output_buffer[i * 3 + 1] = (zrgb >> 8) & 0xff;
+              output_buffer[i * 3 + 2] = (zrgb >> 16) & 0xff;
+          }
+      }
   }
 
   void getScreenGrayscale(ALEInterface *ale, unsigned char *output_buffer){
